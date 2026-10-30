@@ -2,6 +2,9 @@ const std = @import("std");
 const builtin = @import("builtin");
 const FailStep = std.Build.Step.Fail;
 
+const install_bin: std.Build.InstallDir = .{ .custom = "afl/bin" };
+const install_lib: std.Build.InstallDir = .{ .custom = "afl/lib/afl" };
+
 pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -9,6 +12,11 @@ pub fn build(b: *std.Build) !void {
     // const lib_path_flag = b.fmt("-DAFL_PATH=\"{s}\"", .{b.lib_dir});
     // const bin_path_flag = b.fmt("-DBIN_PATH=\"{s}\"", .{b.exe_dir});
     const version = std.SemanticVersion{ .major = 4, .minor = 21, .patch = 0 };
+    const afl_prefix = b.option(
+        []const u8,
+        "afl-prefix",
+        "AFL++ install prefix used for compiled-in AFL_PATH/BIN_PATH",
+    ) orelse "zig-out/afl";
 
     // Custom options
     const use_z = b.option(bool, "use-z", "Use system zlib") orelse true;
@@ -27,7 +35,10 @@ pub fn build(b: *std.Build) !void {
     var flag_buffer: [16][]const u8 = undefined;
     var flags: std.ArrayList([]const u8) = .initBuffer(&flag_buffer);
     try flags.appendSliceBounded(&EXE_FLAGS);
-    // try flags.appendSliceBounded(&.{ lib_path_flag, bin_path_flag });
+    try flags.appendSliceBounded(&.{
+        b.fmt("-DAFL_PATH=\"{s}/lib/afl\"", .{afl_prefix}),
+        b.fmt("-DBIN_PATH=\"{s}/bin\"", .{afl_prefix}),
+    });
     if (target.result.cpu.arch.isX86()) {
         try flags.appendSliceBounded(&.{ "-mavx2", "-D_HAVE_AVX2" });
     }
@@ -105,8 +116,7 @@ pub fn build(b: *std.Build) !void {
         target,
         optimize,
         version,
-        // lib_path_flag,
-        // bin_path_flag,
+        afl_prefix,
         AFLplusplus_dep,
         common_obj,
     );
@@ -136,7 +146,7 @@ pub fn build(b: *std.Build) !void {
     fuzz_exe.root_module.addObject(sharedmem_obj);
     fuzz_exe.root_module.addObject(common_obj);
 
-    const fuzz_exe_install = b.addInstallArtifact(fuzz_exe, .{});
+    const fuzz_exe_install = b.addInstallArtifact(fuzz_exe, .{ .dest_dir = .{ .override = install_bin } });
     exes_step.dependOn(&fuzz_exe_install.step);
 
     const showmap_exe = b.addExecutable(.{
@@ -164,7 +174,7 @@ pub fn build(b: *std.Build) !void {
     showmap_exe.root_module.addObject(sharedmem_obj);
     showmap_exe.root_module.addObject(common_obj);
 
-    const showmap_exe_install = b.addInstallArtifact(showmap_exe, .{});
+    const showmap_exe_install = b.addInstallArtifact(showmap_exe, .{ .dest_dir = .{ .override = install_bin } });
     exes_step.dependOn(&showmap_exe_install.step);
 
     const tmin_exe = b.addExecutable(.{
@@ -191,7 +201,7 @@ pub fn build(b: *std.Build) !void {
     tmin_exe.root_module.addObject(sharedmem_obj);
     tmin_exe.root_module.addObject(common_obj);
 
-    const tmin_exe_install = b.addInstallArtifact(tmin_exe, .{});
+    const tmin_exe_install = b.addInstallArtifact(tmin_exe, .{ .dest_dir = .{ .override = install_bin } });
     exes_step.dependOn(&tmin_exe_install.step);
 
     const analyze_exe = b.addExecutable(.{
@@ -218,7 +228,7 @@ pub fn build(b: *std.Build) !void {
     analyze_exe.root_module.addObject(sharedmem_obj);
     analyze_exe.root_module.addObject(common_obj);
 
-    const analyze_exe_install = b.addInstallArtifact(analyze_exe, .{});
+    const analyze_exe_install = b.addInstallArtifact(analyze_exe, .{ .dest_dir = .{ .override = install_bin } });
     exes_step.dependOn(&analyze_exe_install.step);
 
     const gotcpu_exe = b.addExecutable(.{
@@ -242,7 +252,7 @@ pub fn build(b: *std.Build) !void {
     gotcpu_exe.root_module.addIncludePath(AFLplusplus_inc_path);
     gotcpu_exe.root_module.addObject(common_obj);
 
-    const gotcpu_exe_install = b.addInstallArtifact(gotcpu_exe, .{});
+    const gotcpu_exe_install = b.addInstallArtifact(gotcpu_exe, .{ .dest_dir = .{ .override = install_bin } });
     exes_step.dependOn(&gotcpu_exe_install.step);
 
     const as_exe = b.addExecutable(.{
@@ -265,7 +275,7 @@ pub fn build(b: *std.Build) !void {
     }
     as_exe.root_module.addIncludePath(AFLplusplus_inc_path);
 
-    const as_exe_install = b.addInstallArtifact(as_exe, .{});
+    const as_exe_install = b.addInstallArtifact(as_exe, .{ .dest_dir = .{ .override = install_bin } });
     exes_step.dependOn(&as_exe_install.step);
 
     b.default_step.dependOn(exes_step);
@@ -408,6 +418,10 @@ pub fn build(b: *std.Build) !void {
     });
     fmt_step.dependOn(&fmt.step);
     b.default_step.dependOn(fmt_step);
+
+    const afl_step = b.step("afl", "Build AFL++ toolchain");
+    afl_step.dependOn(exes_step);
+    afl_step.dependOn(&b.top_level_steps.get("llvm_exes").?.step);
 }
 
 fn setupLLVMTooling(
@@ -415,8 +429,7 @@ fn setupLLVMTooling(
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     version: std.SemanticVersion,
-    // lib_path_flag: []const u8,
-    // bin_path_flag: []const u8,
+    afl_prefix: []const u8,
     AFLplusplus_dep: *std.Build.Dependency,
     common_obj: *std.Build.Step.Compile,
 ) !void {
@@ -425,7 +438,7 @@ fn setupLLVMTooling(
     const AFLplusplus_inc_path = AFLplusplus_dep.path("include/");
     const AFLplusplus_ins_path = AFLplusplus_dep.path("instrumentation/");
 
-    const enable_lto = b.option(bool, "enable-lto", "Enable LTO mode") orelse true;
+    const enable_lto = b.option(bool, "enable-lto", "Enable LTO mode") orelse false;
     const enable_wafl = b.option(bool, "enable-wafl", "Enable WAFL mode on WASI") orelse false;
 
     // LLVM instrumentation object suite
@@ -461,6 +474,10 @@ fn setupLLVMTooling(
     var llvm_c_flags_buffer: [32][]const u8 = undefined;
     var llvm_c_flags: std.ArrayList([]const u8) = .initBuffer(&llvm_c_flags_buffer);
     try llvm_c_flags.appendSliceBounded(&LLVM_EXE_C_FLAGS);
+    try llvm_c_flags.appendSliceBounded(&.{
+        b.fmt("-DAFL_PATH=\"{s}/lib/afl\"", .{afl_prefix}),
+        b.fmt("-DBIN_PATH=\"{s}/bin\"", .{afl_prefix}),
+    });
     const llvm_version = std.mem.trimEnd(u8, b.run(&.{ llvm_config_path, "--version" }), "\n");
     var llvm_version_iter = std.mem.tokenizeScalar(u8, llvm_version, '.');
     const llvm_major = try std.fmt.parseUnsigned(u8, llvm_version_iter.next().?, 10);
@@ -469,8 +486,6 @@ fn setupLLVMTooling(
     const llvm_lib_dir = std.mem.trimEnd(u8, b.run(&.{ llvm_config_path, "--libdir" }), "\n");
     const llvm_lib_path = std.Build.LazyPath{ .cwd_relative = llvm_lib_dir };
     try llvm_c_flags.appendSliceBounded(&.{
-        // lib_path_flag,
-        // bin_path_flag,
         b.fmt("-DLLVM_MAJOR={}", .{llvm_major}),
         b.fmt("-DLLVM_MINOR={}", .{llvm_minor}),
         b.fmt("-DLLVM_VER=\"{s}\"", .{llvm_version}),
@@ -536,8 +551,9 @@ fn setupLLVMTooling(
             });
             obj.root_module.addIncludePath(AFLplusplus_inc_path);
 
-            const obj_install = b.addInstallBinFile(
+            const obj_install = b.addInstallFileWithDir(
                 obj.getEmittedBin(),
+                install_lib,
                 NAME ++ if (MODE.len > 0) "-" ++ MODE else "" ++ ".o",
             );
             llvm_objs_step.dependOn(&obj_install.step);
@@ -599,13 +615,18 @@ fn setupLLVMTooling(
         lib.root_module.addObject(llvm_common_obj);
 
         const lib_install = b.addInstallArtifact(lib, .{
+            .dest_dir = .{ .override = install_lib },
             .dest_sub_path = b.fmt("{s}.so", .{name}),
             .dylib_symlinks = false,
         });
         llvm_libs_step.dependOn(&lib_install.step);
     }
 
-    const dynamic_list_install = b.addInstallFile(AFLplusplus_dep.path("dynamic_list.txt"), "lib/dynamic_list.txt");
+    const dynamic_list_install = b.addInstallFileWithDir(
+        AFLplusplus_dep.path("dynamic_list.txt"),
+        install_lib,
+        "dynamic_list.txt",
+    );
 
     const cc_exe = b.addExecutable(.{
         .name = "afl-cc",
@@ -626,7 +647,7 @@ fn setupLLVMTooling(
     cc_exe.root_module.linkSystemLibrary(llvm_name, .{});
     cc_exe.root_module.addObject(common_obj);
 
-    const cc_exe_install = b.addInstallArtifact(cc_exe, .{});
+    const cc_exe_install = b.addInstallArtifact(cc_exe, .{ .dest_dir = .{ .override = install_bin } });
     cc_exe_install.step.dependOn(&dynamic_list_install.step);
     cc_exe_install.step.dependOn(llvm_objs_step);
     cc_exe_install.step.dependOn(llvm_libs_step);
@@ -648,7 +669,7 @@ fn setupLLVMTooling(
         });
         ld_lto_exe.root_module.addIncludePath(AFLplusplus_inc_path);
 
-        const ld_lto_exe_install = b.addInstallArtifact(ld_lto_exe, .{});
+        const ld_lto_exe_install = b.addInstallArtifact(ld_lto_exe, .{ .dest_dir = .{ .override = install_bin } });
         ld_lto_exe_install.step.dependOn(&dynamic_list_install.step);
         ld_lto_exe_install.step.dependOn(llvm_objs_step);
         ld_lto_exe_install.step.dependOn(llvm_libs_step);
